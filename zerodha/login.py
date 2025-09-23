@@ -1,101 +1,82 @@
 import os
-import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from kiteconnect import KiteConnect
+from utils.json_utils import load_json, save_json, is_token_valid
 
 # ================= CONFIG ==================
-CONFIG_FILE = "config.json"   # contains API_KEY and SECRET_KEY
-TOKEN_FILE = "tokens.json"    # stores access/refresh tokens
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+TOKEN_FILE = os.path.join(BASE_DIR, "tokens.json")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# ================= UTILS ==================
-def load_json(file):
-    """Load JSON file safely."""
-    if not os.path.exists(file):
-        return {}
-    with open(file, "r") as f:
-        return json.load(f)
+class ZerodhaSession:
+    """Manage Zerodha login, tokens, and KiteConnect session."""
+
+    def __init__(self):
+        self.config = load_json(CONFIG_FILE)
+        self.tokens = load_json(TOKEN_FILE)
+        self.api_key = self.config.get("API_KEY")
+        self.secret_key = self.config.get("SECRET_KEY")
+        self.access_token = None
+        self.kite = None
+
+        if not self.api_key or not self.secret_key:
+            raise ValueError("❌ API_KEY or SECRET_KEY not found in config.json")
+
+        self._initialize_session()
+
+    def _initialize_session(self):
+        """Initialize access token and KiteConnect instance."""
+        if is_token_valid(self.tokens):
+            logger.info("✅ Using existing access token.")
+            self.access_token = self.tokens["access_token"]
+        else:
+            self.access_token = self._login_and_store_token()
+
+        # Initialize KiteConnect instance
+        self.kite = KiteConnect(api_key=self.api_key)
+        self.kite.set_access_token(self.access_token)
+
+    def _login_and_store_token(self):
+        """Prompt user for login and store access token."""
+        kite = KiteConnect(api_key=self.api_key)
+        logger.info("🔑 Generating new access token. Please login...")
+
+        login_url = kite.login_url()
+        print(f"Please login here: {login_url}")
+        request_token = input("Enter the request token: ").strip()
+
+        data = kite.generate_session(request_token, api_secret=self.secret_key)
+
+        # Save tokens
+        self.tokens = {
+            "request_token": request_token,
+            "access_token": data["access_token"],
+            "public_token": data.get("public_token"),
+            "refresh_token": data.get("refresh_token"),
+            "enctoken": data.get("enctoken"),
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+        save_json(TOKEN_FILE, self.tokens)
+        logger.info("✅ New access token generated and saved.")
+        return data["access_token"]
+
+    def get_access_token(self):
+        """Return the current valid access token."""
+        return self.access_token
+
+    def get_kite_session(self):
+        """Return the ready KiteConnect instance."""
+        return self.kite
 
 
-def save_json(file, data):
-    """Save data into JSON file."""
-    with open(file, "w") as f:
-        json.dump(data, f, indent=4)
-
-
-def is_token_valid(tokens):
-    """Check if access token is still valid (before next 6 AM)."""
-    if "access_token" not in tokens or "generated_at" not in tokens:
-        return False
-
-    generated_at = datetime.fromisoformat(tokens["generated_at"])
-    now = datetime.now()
-
-    # Zerodha tokens expire at 6 AM every day
-    expiry_time = generated_at.replace(hour=6, minute=0, second=0, microsecond=0) + timedelta(days=1)
-    return now < expiry_time
-
-
-# ================= MAIN ==================
-def login_and_store_token():
-    """Handle login and store access token in tokens.json."""
-    config = load_json(CONFIG_FILE)
-    tokens = load_json(TOKEN_FILE)
-
-    API_KEY = config.get("API_KEY")
-    SECRET_KEY = config.get("SECRET_KEY")
-
-     # If valid token exists, reuse it
-    if is_token_valid(tokens):
-        logger.info("✅ Access token is still valid. No need to re-login.")
-        return tokens["access_token"]
-
-    # Otherwise, regenerate
-    if not API_KEY or not SECRET_KEY:
-        raise ValueError("❌ API_KEY or SECRET_KEY not found in config.json")
-
-    kite = KiteConnect(api_key=API_KEY)
-
-
-    logger.info("🔑 Generating new access token. Please login...")
-
-    login_url = kite.login_url()
-    print(f"Please login here: {login_url}")
-    request_token = input("Enter the request token: ").strip()
-
-    data = kite.generate_session(request_token, api_secret=SECRET_KEY)
-
-    # Save updated tokens
-    tokens = {
-        "request_token": request_token,
-        "access_token": data["access_token"],
-        "public_token": data.get("public_token"),
-        "refresh_token": data.get("refresh_token"),
-        "enctoken": data.get("enctoken"),
-        "generated_at": datetime.now().isoformat()
-    }
-    save_json(TOKEN_FILE, tokens)
-
-    logger.info("✅ New access token generated and saved.")
-    return tokens["access_token"]
-
-
-def get_access_token():
-    """Return valid access token (re-login if needed)."""
-    tokens = load_json(TOKEN_FILE)
-
-    if is_token_valid(tokens):
-        return tokens["access_token"]
-
-    # If invalid, regenerate by login
-    return login_and_store_token()
-
-
+# ================= RUN DIRECTLY ==================
 if __name__ == "__main__":
-    # Running this file directly will refresh/login and save tokens
-    token = get_access_token()
-    print(f"🎉 Your access token: {token}")
+    session = ZerodhaSession()
+    print("🎉 Kite session ready!")
+    print("Access Token:", session.get_access_token())
+    print("Profile:", session.get_kite_session().profile())

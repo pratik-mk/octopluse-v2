@@ -1,0 +1,5 @@
+venv/*
+logs/
+__pycache__/
+config.json
+tokens.json

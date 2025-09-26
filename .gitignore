@@ -8,8 +8,6 @@ octopluse.db
 .DS_Store 
 
 
-
-
 .pypirc
 *.xml
 .idea/smartapi-python.iml
